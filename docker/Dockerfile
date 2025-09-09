@@ -9,7 +9,7 @@ COPY infra/nginx/ui.conf /etc/nginx/conf.d/default.conf
 
 # Copy the generated Nuxt output into the web root at build time.
 # We pass NUXT_OUTPUT as a build-arg from the workflow (default: .output/public)
-ARG NUXT_OUTPUT=.output/public
+ARG NUXT_OUTPUT=dist
 COPY ${NUXT_OUTPUT}/ /usr/share/nginx/html/
 
 EXPOSE 8080

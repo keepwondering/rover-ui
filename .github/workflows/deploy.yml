@@ -5,7 +5,7 @@ on:
     branches: [main, qa, dev]
 
 concurrency:
-  group: ui-${{ github.ref_name }}
+  group: ${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Authoritative values from GitHub VARIABLES (not secrets):
-      #   ROVER_GCP_PROJECT_ID, ROVER_GCP_REGION, ROVER_REPO_NAME
+      # ROVER_GCP_PROJECT_ID, ROVER_GCP_REGION, ROVER_REPO_NAME
       - name: Export GitHub Variables
         run: |
           {
@@ -62,9 +62,17 @@ jobs:
                 print val; exit
               }' "$TFV"
           }
-          echo "ROVER_SERVICE_NAME=$(kv service_name)" >> "$GITHUB_ENV"
-          echo "ROVER_DOMAIN_NAME=$(kv domain_name)"   >> "$GITHUB_ENV"
+          SVC="$(kv service_name)"
+          DOM="$(kv domain_name)"
+          echo "ROVER_SERVICE_NAME=$SVC" >> "$GITHUB_ENV"
+          echo "ROVER_DOMAIN_NAME=$DOM"  >> "$GITHUB_ENV"
 
+          # Hard fail if service_name is empty to avoid bad tags
+          if [ -z "$SVC" ]; then
+            echo "::error::service_name not found in $TFV"
+            echo "Contents of $TFV:"; sed -n '1,200p' "$TFV"
+            exit 1
+          fi
       # Build Nuxt (no Docker yet)
       - uses: actions/setup-node@v4
         with:
@@ -86,6 +94,26 @@ jobs:
           service_account: ${{ vars.ROVER_GCP_SA_EMAIL }}
           create_credentials_file: true
           export_environment_variables: true
+
+      # 1) Authenticate to GCP as your SA via WIF (no JSON key)
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.ROVER_GCP_WIF_PROVIDER }}  # e.g. projects/..../providers/gh-publisher
+          service_account: ${{ vars.ROVER_GCP_SA_EMAIL }}                 # e.g. org-deployer@homelab-470619.iam.gserviceaccount.com
+          create_credentials_file: true
+          export_environment_variables: true
+
+      # 2) Install gcloud bound to that SA
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.ROVER_GCP_PROJECT_ID }}
+
+      # (Optional sanity check)
+      - name: Who am I?
+        run: |
+          gcloud auth list
+          gcloud config list project
+
       - uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.ROVER_GCP_PROJECT_ID }}
@@ -98,7 +126,7 @@ jobs:
         id: build
         run: |
           SHORT_SHA="${GITHUB_SHA::12}"
-          IMAGE="${{ env.ROVER_REGION }}-docker.pkg.dev/${{ env.ROVER_GCP_PROJECT_ID }}/${{ env.ROVER_REPO_NAME }}/${{ env.ROVER_SERVICE_NAME }}:${SHORT_SHA}"
+          IMAGE="${{ env.ROVER_REPO_NAME }}/${{ env.ROVER_SERVICE_NAME }}:${SHORT_SHA}"
           docker build \
             -f docker/Dockerfile \
             --build-arg NUXT_OUTPUT="${{ env.ROVER_NUXT_OUTPUT }}" \
