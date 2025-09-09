@@ -37,9 +37,9 @@ jobs:
       - name: Select env (branch → TF_DIR/vars)
         run: |
           case "${GITHUB_REF_NAME}" in
-            main) TF_DIR="infra/rover-ui/prod"; TF_VARS="prod.tfvars" ;;
-            qa)   TF_DIR="infra/rover-ui/qa";   TF_VARS="qa.tfvars"   ;;
-            dev|*)TF_DIR="infra/rover-ui/dev";  TF_VARS="dev.tfvars"  ;;
+            main) TF_DIR="infra/rover-ui/envs/prod"; TF_VARS="prod.tfvars" ;;
+            qa)   TF_DIR="infra/rover-ui/envs/qa";   TF_VARS="qa.tfvars"   ;;
+            dev|*)TF_DIR="infra/rover-ui/envs/dev";  TF_VARS="dev.tfvars"  ;;
           esac
           echo "TF_DIR=$TF_DIR"   >> "$GITHUB_ENV"
           echo "TF_VARS=$TF_VARS" >> "$GITHUB_ENV"
