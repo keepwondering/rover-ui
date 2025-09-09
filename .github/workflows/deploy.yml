@@ -53,22 +53,32 @@ jobs:
           echo "TF_VARS=$TF_VARS" >> "$GITHUB_ENV"
           echo "Using $TF_DIR with $TF_VARS"
 
-      # Load only service_name & domain_name from tfvars (leave project/region to GH variables)
-      - name: Load tfvars (service_name, domain_name)
+      # Read values from tfvars and export as env vars
+      - name: Load tfvars → env (bash-only)
+        env:
+          TFV: ${{ env.TF_DIR }}/dev.tfvars
         run: |
-          python - <<'PY'
-          import os
-          os.system("python -m pip install -q python-hcl2")
-          import hcl2, pathlib
-          tfv = pathlib.Path(os.environ["TF_DIR"]) / "dev.tfvars"
-          with open(tfv, "r") as f:
-              data = hcl2.load(f)
-          svc = str(data.get("service_name","")).strip()
-          dom = str(data.get("domain_name","")).strip()
-          with open(os.environ["GITHUB_ENV"], "a") as env:
-              if svc: env.write(f"ROVER_SERVICE_NAME={svc}\n")
-              if dom: env.write(f"ROVER_DOMAIN_NAME={dom}\n")
-          PY
+          kv () {
+            # usage: kv service_name  -> prints the value
+            awk -v key="$1" -F= '
+              /^[[:space:]]*#/ {next}          # skip full-line comments
+              /^[[:space:]]*$/ {next}          # skip blanks
+              $1 ~ "^[[:space:]]*"key"[[:space:]]*$" {
+                val=$2
+                sub(/#.*/,"",val)              # strip inline # comments
+                sub(/\/\/.*/,"",val)           # strip inline // comments
+                gsub(/^[[:space:]]+|[[:space:]]+$/,"",val)
+                gsub(/^"/,"",val); gsub(/"$/,"",val)  # trim surrounding quotes
+                print val; exit
+              }
+            ' "$TFV"
+          }
+
+          # Export only the ones you want from tfvars:
+          echo "ROVER_SERVICE_NAME=$(kv service_name)" >> "$GITHUB_ENV"
+          echo "ROVER_DOMAIN_NAME=$(kv domain_name)"   >> "$GITHUB_ENV"
+          # If you want repo_name from tfvars (else you already have a GitHub Variable):
+          # echo "ROVER_REPO_NAME=$(kv repo_name)"     >> "$GITHUB_ENV"
 
       # Node & Nuxt build
       - uses: actions/setup-node@v4
