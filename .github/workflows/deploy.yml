@@ -12,75 +12,60 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # WIF
+      id-token: write   # WIF
       contents: read
 
     env:
+      # default; will be overwritten by the branch selector step
       TF_DIR: infra/dev/rover-ui
-      ROVER_NUXT_OUTPUT: dist # stays in workflow
+      ROVER_NUXT_OUTPUT: dist
 
     steps:
       - uses: actions/checkout@v4
 
-      # Export GitHub Variables -> env (authoritative for project/region/repo)
+      # Authoritative values from GitHub VARIABLES (not secrets):
+      #   ROVER_GCP_PROJECT_ID, ROVER_GCP_REGION, ROVER_REPO_NAME
       - name: Export GitHub Variables
         run: |
           {
             echo "ROVER_GCP_PROJECT_ID=${{ vars.ROVER_GCP_PROJECT_ID }}"
             echo "ROVER_REGION=${{ vars.ROVER_GCP_REGION }}"
-            echo "ROVER_REPO_NAME=${{ vars.ROVER_REPO_NAME }}"
+            echo "ROVER_REPO_NAME=${{ vars.ROVER_REPO_NAME }}"   # just repo id, e.g. rover-app
           } >> "$GITHUB_ENV"
 
-      # Decide which Terraform root & tfvars to use based on branch
+      # Branch -> env mapping
       - name: Select env (branch → TF_DIR/vars)
-        id: envsel
         run: |
           case "${GITHUB_REF_NAME}" in
-            main)
-              TF_DIR="infra/prod/rover-ui"
-              TF_VARS="prod.tfvars"
-              ;;
-            qa)
-              TF_DIR="infra/qa/rover-ui"
-              TF_VARS="qa.tfvars"
-              ;;
-            dev|*)
-              TF_DIR="infra/dev/rover-ui"
-              TF_VARS="dev.tfvars"
-              ;;
+            main) TF_DIR="infra/prod/rover-ui"; TF_VARS="prod.tfvars" ;;
+            qa)   TF_DIR="infra/qa/rover-ui";   TF_VARS="qa.tfvars"   ;;
+            dev|*)TF_DIR="infra/dev/rover-ui";  TF_VARS="dev.tfvars"  ;;
           esac
           echo "TF_DIR=$TF_DIR"   >> "$GITHUB_ENV"
           echo "TF_VARS=$TF_VARS" >> "$GITHUB_ENV"
           echo "Using $TF_DIR with $TF_VARS"
 
-      # Read values from tfvars and export as env vars
+      # Read values from tfvars and export only the ones we need from there
       - name: Load tfvars → env (bash-only)
         env:
-          TFV: ${{ env.TF_DIR }}/dev.tfvars
+          TFV: ${{ env.TF_DIR }}/${{ env.TF_VARS }}
         run: |
           kv () {
-            # usage: kv service_name  -> prints the value
             awk -v key="$1" -F= '
-              /^[[:space:]]*#/ {next}          # skip full-line comments
-              /^[[:space:]]*$/ {next}          # skip blanks
+              /^[[:space:]]*#/ {next}
+              /^[[:space:]]*$/ {next}
               $1 ~ "^[[:space:]]*"key"[[:space:]]*$" {
                 val=$2
-                sub(/#.*/,"",val)              # strip inline # comments
-                sub(/\/\/.*/,"",val)           # strip inline // comments
+                sub(/#.*/,"",val); sub(/\/\/.*/,"",val)
                 gsub(/^[[:space:]]+|[[:space:]]+$/,"",val)
-                gsub(/^"/,"",val); gsub(/"$/,"",val)  # trim surrounding quotes
+                gsub(/^"/,"",val); gsub(/"$/,"",val)
                 print val; exit
-              }
-            ' "$TFV"
+              }' "$TFV"
           }
-
-          # Export only the ones you want from tfvars:
           echo "ROVER_SERVICE_NAME=$(kv service_name)" >> "$GITHUB_ENV"
           echo "ROVER_DOMAIN_NAME=$(kv domain_name)"   >> "$GITHUB_ENV"
-          # If you want repo_name from tfvars (else you already have a GitHub Variable):
-          # echo "ROVER_REPO_NAME=$(kv repo_name)"     >> "$GITHUB_ENV"
 
-      # Node & Nuxt build
+      # Build Nuxt (no Docker yet)
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -92,9 +77,9 @@ jobs:
         env: { NUXT_TELEMETRY_DISABLED: 1 }
         run: |
           npm run generate
-          test -d "${{ env.ROVER_NUXT_OUTPUT }}" || (echo "Missing $ROVER_NUXT_OUTPUT" && exit 1)
+          ls -lah "${{ env.ROVER_NUXT_OUTPUT }}" || (echo "Missing $ROVER_NUXT_OUTPUT" && exit 1)
 
-      # WIF auth (from GitHub Variables)
+      # WIF auth
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.ROVER_GCP_WIF_PROVIDER }}
@@ -114,24 +99,25 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::12}"
           IMAGE="${{ env.ROVER_REGION }}-docker.pkg.dev/${{ env.ROVER_GCP_PROJECT_ID }}/${{ env.ROVER_REPO_NAME }}/${{ env.ROVER_SERVICE_NAME }}:${SHORT_SHA}"
-          docker build --build-arg NUXT_OUTPUT="${{ env.ROVER_NUXT_OUTPUT }}" -t "$IMAGE" .
+          docker build \
+            -f docker/Dockerfile \
+            --build-arg NUXT_OUTPUT="${{ env.ROVER_NUXT_OUTPUT }}" \
+            -t "$IMAGE" .
           docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      # Terraform: override project_id & region with GH variables, and only pass dynamic 'image'
+      # Terraform apply (override project/region via TF_VAR_*; pass only dynamic image)
       - uses: hashicorp/setup-terraform@v3
-
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
         run: terraform init -backend-config=backend.hcl
-
       - name: Terraform Apply
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_project_id: ${{ env.ROVER_GCP_PROJECT_ID }}
-          TF_VAR_region: ${{ env.ROVER_REGION }}
-          TF_VAR_image: ${{ steps.build.outputs.image }}
-        run: terraform apply -auto-approve -var-file=dev.tfvars
+          TF_VAR_region:     ${{ env.ROVER_REGION }}
+          TF_VAR_image:      ${{ steps.build.outputs.image }}
+        run: terraform apply -auto-approve -var-file=${{ env.TF_VARS }}
 
       # DNS records (first-time mapping)
       - name: Show DNS records
