@@ -12,7 +12,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # WIF
+      id-token: write # WIF
       contents: read
 
     env:
@@ -37,9 +37,9 @@ jobs:
       - name: Select env (branch → TF_DIR/vars)
         run: |
           case "${GITHUB_REF_NAME}" in
-            main) TF_DIR="infra/prod/rover-ui"; TF_VARS="prod.tfvars" ;;
-            qa)   TF_DIR="infra/qa/rover-ui";   TF_VARS="qa.tfvars"   ;;
-            dev|*)TF_DIR="infra/dev/rover-ui";  TF_VARS="dev.tfvars"  ;;
+            main) TF_DIR="infra/rover-ui/prod"; TF_VARS="prod.tfvars" ;;
+            qa)   TF_DIR="infra/rover-ui/qa";   TF_VARS="qa.tfvars"   ;;
+            dev|*)TF_DIR="infra/rover-ui/dev";  TF_VARS="dev.tfvars"  ;;
           esac
           echo "TF_DIR=$TF_DIR"   >> "$GITHUB_ENV"
           echo "TF_VARS=$TF_VARS" >> "$GITHUB_ENV"
@@ -98,8 +98,8 @@ jobs:
       # 1) Authenticate to GCP as your SA via WIF (no JSON key)
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.ROVER_GCP_WIF_PROVIDER }}  # e.g. projects/..../providers/gh-publisher
-          service_account: ${{ vars.ROVER_GCP_SA_EMAIL }}                 # e.g. org-deployer@homelab-470619.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.ROVER_GCP_WIF_PROVIDER }} # e.g. projects/..../providers/gh-publisher
+          service_account: ${{ vars.ROVER_GCP_SA_EMAIL }} # e.g. org-deployer@homelab-470619.iam.gserviceaccount.com
           create_credentials_file: true
           export_environment_variables: true
 
@@ -143,8 +143,8 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_project_id: ${{ env.ROVER_GCP_PROJECT_ID }}
-          TF_VAR_region:     ${{ env.ROVER_REGION }}
-          TF_VAR_image:      ${{ steps.build.outputs.image }}
+          TF_VAR_region: ${{ env.ROVER_REGION }}
+          TF_VAR_image: ${{ steps.build.outputs.image }}
         run: terraform apply -auto-approve -var-file=${{ env.TF_VARS }}
 
       # DNS records (first-time mapping)
