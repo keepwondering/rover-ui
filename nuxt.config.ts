@@ -5,7 +5,7 @@ export default defineNuxtConfig({
 
   nitro: {
     output: {
-      publicDir: "docker/dist", // static site goes here -> docker/dist
+      publicDir: "dist", // static site goes here -> docker/dist
     },
   },
 
