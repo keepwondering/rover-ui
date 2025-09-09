@@ -1,0 +1,143 @@
+name: deploy-ui
+
+on:
+  push:
+    branches: [main, qa, dev]
+
+concurrency:
+  group: ui-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # WIF
+      contents: read
+
+    env:
+      TF_DIR: infra/dev/rover-ui
+      ROVER_NUXT_OUTPUT: dist # stays in workflow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Export GitHub Variables -> env (authoritative for project/region/repo)
+      - name: Export GitHub Variables
+        run: |
+          {
+            echo "ROVER_GCP_PROJECT_ID=${{ vars.ROVER_GCP_PROJECT_ID }}"
+            echo "ROVER_REGION=${{ vars.ROVER_GCP_REGION }}"
+            echo "ROVER_REPO_NAME=${{ vars.ROVER_REPO_NAME }}"
+          } >> "$GITHUB_ENV"
+
+      # Decide which Terraform root & tfvars to use based on branch
+      - name: Select env (branch → TF_DIR/vars)
+        id: envsel
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            main)
+              TF_DIR="infra/prod/rover-ui"
+              TF_VARS="prod.tfvars"
+              ;;
+            qa)
+              TF_DIR="infra/qa/rover-ui"
+              TF_VARS="qa.tfvars"
+              ;;
+            dev|*)
+              TF_DIR="infra/dev/rover-ui"
+              TF_VARS="dev.tfvars"
+              ;;
+          esac
+          echo "TF_DIR=$TF_DIR"   >> "$GITHUB_ENV"
+          echo "TF_VARS=$TF_VARS" >> "$GITHUB_ENV"
+          echo "Using $TF_DIR with $TF_VARS"
+
+      # Load only service_name & domain_name from tfvars (leave project/region to GH variables)
+      - name: Load tfvars (service_name, domain_name)
+        run: |
+          python - <<'PY'
+          import os
+          os.system("python -m pip install -q python-hcl2")
+          import hcl2, pathlib
+          tfv = pathlib.Path(os.environ["TF_DIR"]) / "dev.tfvars"
+          with open(tfv, "r") as f:
+              data = hcl2.load(f)
+          svc = str(data.get("service_name","")).strip()
+          dom = str(data.get("domain_name","")).strip()
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              if svc: env.write(f"ROVER_SERVICE_NAME={svc}\n")
+              if dom: env.write(f"ROVER_DOMAIN_NAME={dom}\n")
+          PY
+
+      # Node & Nuxt build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install deps
+        env: { NUXT_TELEMETRY_DISABLED: 1 }
+        run: npm ci
+      - name: Build static (Nuxt)
+        env: { NUXT_TELEMETRY_DISABLED: 1 }
+        run: |
+          npm run generate
+          test -d "${{ env.ROVER_NUXT_OUTPUT }}" || (echo "Missing $ROVER_NUXT_OUTPUT" && exit 1)
+
+      # WIF auth (from GitHub Variables)
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.ROVER_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.ROVER_GCP_SA_EMAIL }}
+          create_credentials_file: true
+          export_environment_variables: true
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.ROVER_GCP_PROJECT_ID }}
+
+      # Build nginx image that serves the generated assets, push to Artifact Registry
+      - name: Docker auth to Artifact Registry
+        run: gcloud auth configure-docker ${{ env.ROVER_REGION }}-docker.pkg.dev -q
+
+      - name: Build & push image
+        id: build
+        run: |
+          SHORT_SHA="${GITHUB_SHA::12}"
+          IMAGE="${{ env.ROVER_REGION }}-docker.pkg.dev/${{ env.ROVER_GCP_PROJECT_ID }}/${{ env.ROVER_REPO_NAME }}/${{ env.ROVER_SERVICE_NAME }}:${SHORT_SHA}"
+          docker build --build-arg NUXT_OUTPUT="${{ env.ROVER_NUXT_OUTPUT }}" -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # Terraform: override project_id & region with GH variables, and only pass dynamic 'image'
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_project_id: ${{ env.ROVER_GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ env.ROVER_REGION }}
+          TF_VAR_image: ${{ steps.build.outputs.image }}
+        run: terraform apply -auto-approve -var-file=dev.tfvars
+
+      # DNS records (first-time mapping)
+      - name: Show DNS records
+        if: always()
+        run: |
+          DM="$(terraform -chdir=${{ env.TF_DIR }} output -raw domain_name || true)"
+          if [[ -n "$DM" ]]; then
+            gcloud beta run domain-mappings describe \
+              --domain "$DM" \
+              --region "${{ env.ROVER_REGION }}" \
+              --format="table(status.resourceRecords[].name,status.resourceRecords[].type,status.resourceRecords[].rrdata)" || true
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          URL="$(terraform -chdir=${{ env.TF_DIR }} output -raw service_url || true)"
+          echo "Deployed image: ${{ steps.build.outputs.image }}"
+          echo "Service URL:    ${URL}"
