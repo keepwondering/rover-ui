@@ -5,10 +5,6 @@ variable "region" {
 }
 variable "service_name" { type = string }
 variable "image" { type = string } # full AR image URL (passed by CI)
-variable "repo_name" {
-  type    = string
-  default = "app"
-}
 variable "domain_name" {
   type    = string
   default = ""
