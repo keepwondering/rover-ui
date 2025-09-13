@@ -71,4 +71,34 @@ const items = [
       </div>
     </TreeItem>
   </TreeRoot>
+  <div><pre>lab: {{ apiResponse }}</pre></div>
 </template>
+
+<script lang="ts">
+type componentData = {
+    apiResponse: string | null;
+}
+export default {
+    data(): componentData {
+        return {
+            apiResponse: null
+        }
+    },
+    async mounted() {
+        try {
+            const res = await fetch('https://api.keepwondering.io', {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+
+            const data = await res.json();
+            this.apiResponse = data;
+        } catch (err) {
+            this.apiResponse = 'Error fetching data';
+            console.error('Fetch error:', err);
+        }
+    }
+}
+</script>
